@@ -1,15 +1,17 @@
 #include "EspMQTTClient.h"
 #include "Wire.h"
+#include <ArduinoJson.h>
 
 /*!<indirect memory table: https://wiki.analog.com/resources/tools-software/sigmastudio/usingsigmastudio/indirectparamaccess#writing_the_parameter) */
-#define DSP_ADDRESS                 0x38 /*!< i2c slave address for DSP */
-#define DSP_VOLUME_ADDRESS          0x6010 /*!< volume address in memory (indirect memory table) */
-#define DSP_START_ADDRESS           0x6007 /*!< start address in memory (indirect memory table) */
-#define DSP_NUM_TRIGGER_ADDRESS     0x6008 /*!< num address in memory (indirect memory table) */
+#define DSP_ADDRESS                   0x38 /*!< i2c slave address for DSP */
+#define DSP_VOLUME_ADDRESS            24592 /*!< volume address in memory (indirect memory table) */
+#define DSP_VOLUME_CHANNELS_ADDRESS   24586 /*!< volume channels address in memory (indirect memory table) */
+#define DSP_START_ADDRESS             24583 /*!< start address in memory (indirect memory table) */
+#define DSP_NUM_TRIGGER_ADDRESS       24584 /*!< num address in memory (indirect memory table) */
 
-#define PERIODIC_MESSAGE_INTERNAL   30*1000 /*!< periodicity of internal messages in milliseconds */
-#define MAX_DB_VALUE                0 /*!< maximum value of dB */
-#define MIN_DB_VALUE                -50 /*!< minimum value of dB */
+#define PERIODIC_MESSAGE_INTERNAL     30*1000 /*!< periodicity of internal messages in milliseconds */
+#define MAX_DB_VALUE                  0 /*!< maximum value of dB */
+#define MIN_DB_VALUE                  -50 /*!< minimum value of dB */
 
 uint8_t mqtt_mutex = 0;
 uint8_t global_volume_percent = 0;
@@ -78,6 +80,27 @@ void set_volume(uint8_t volume_percent)
   write_value(DSP_NUM_TRIGGER_ADDRESS, 1);
 }
 
+void set_volume_channels(float a, float b, float c, float d, float ab, float cd)
+{
+  int32_t t824_volume_a = dB_to_dsp(a);
+  int32_t t824_volume_b = dB_to_dsp(b);
+  int32_t t824_volume_c = dB_to_dsp(c);
+  int32_t t824_volume_d = dB_to_dsp(d);
+  int32_t t824_volume_ab = dB_to_dsp(ab);
+  int32_t t824_volume_cd = dB_to_dsp(cd);
+
+  Serial.println("Start sending to 0x32");
+  write_value(DSP_VOLUME_CHANNELS_ADDRESS+0, t824_volume_a);
+  write_value(DSP_VOLUME_CHANNELS_ADDRESS+1, t824_volume_b);
+  write_value(DSP_VOLUME_CHANNELS_ADDRESS+2, t824_volume_c);
+  write_value(DSP_VOLUME_CHANNELS_ADDRESS+3, t824_volume_d);
+  write_value(DSP_VOLUME_CHANNELS_ADDRESS+4, t824_volume_ab);
+  write_value(DSP_VOLUME_CHANNELS_ADDRESS+5, t824_volume_cd);
+  write_value(DSP_START_ADDRESS, DSP_VOLUME_CHANNELS_ADDRESS);
+  write_value(DSP_NUM_TRIGGER_ADDRESS, 6);
+  //Serial.println("End sending to 0x32");
+}
+
 void volume_message_received(const String& topic, const String& message) {
   global_volume_percent = strtol(message.c_str(), NULL, 10);
   if (global_volume_percent > 100) { global_volume_percent = 100; }
@@ -91,12 +114,36 @@ void volume_message_received(const String& topic, const String& message) {
   else{
     Serial.println("MQTT mutex is locked");
   }
+}
 
+void volume_channels_message_received(const String& topic, const String& message) {
+  DynamicJsonDocument volume_channels(1024);
+  DeserializationError error = deserializeJson(volume_channels, message); //{"A":"-12.50","B":"-7.5","C":"-3.75","D":"-15","AB":"-3.75","CD":"-16.25"}
+
+  float a_volume = volume_channels["A"];
+  float b_volume = volume_channels["B"];
+  float c_volume = volume_channels["C"];
+  float d_volume = volume_channels["D"];
+  float ab_volume = volume_channels["AB"];
+  float cd_volume = volume_channels["CD"];
+
+  printf("Recieved payload from MQTT %s\n Parsed volumes: %f,%f,%f,%f,%f,%f\n", message.c_str(), a_volume, b_volume, c_volume, d_volume, ab_volume, cd_volume);
+  if (mqtt_mutex == 0) {
+    mqtt_mutex = 1;
+    set_volume_channels(a_volume, b_volume, c_volume, d_volume, ab_volume, cd_volume);
+    mqtt_mutex = 0;
+  }
+  else
+  {
+    Serial.println("MQTT mutex is locked");
+  }
 }
 
 void onConnectionEstablished()
 {
   mqtt_client.subscribe("Dionis/volume/set", volume_message_received);
+  mqtt_client.subscribe("Dionis/volume_channels/set", volume_channels_message_received);
+
   mqtt_client.publish("Dionis/status", "MQTTtoI2C module started");
   mqtt_client.publish("Dionis/volume", String(global_volume_percent));
 }
