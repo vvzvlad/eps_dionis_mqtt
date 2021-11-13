@@ -2,47 +2,53 @@
 #include "Wire.h"
 
 /*!<indirect memory table: https://wiki.analog.com/resources/tools-software/sigmastudio/usingsigmastudio/indirectparamaccess#writing_the_parameter) */
-#define DSP_ADDRESS 0x38 /*!< slave address for DSP */
-#define DSP_VOLUME_ADDRESS 0x6010 /*!< volume address in memory (indirect memory table) */
-#define DSP_START_ADDRESS 0x6007 /*!< start address in memory (indirect memory table) */
-#define DSP_NUM_ADDRESS 0x6008 /*!< num address in memory (indirect memory table) */
-#define PERIDIC_MESSAGE_INTERNAL 30*1000 /*!< periodicity of internal messages in milliseconds */
+#define DSP_ADDRESS                 0x38 /*!< i2c slave address for DSP */
+#define DSP_VOLUME_ADDRESS          0x6010 /*!< volume address in memory (indirect memory table) */
+#define DSP_START_ADDRESS           0x6007 /*!< start address in memory (indirect memory table) */
+#define DSP_NUM_TRIGGER_ADDRESS     0x6008 /*!< num address in memory (indirect memory table) */
+
+#define PERIODIC_MESSAGE_INTERNAL   30*1000 /*!< periodicity of internal messages in milliseconds */
+#define MAX_DB_VALUE                0 /*!< maximum value of dB */
+#define MIN_DB_VALUE                -50 /*!< minimum value of dB */
 
 uint8_t mqtt_mutex = 0;
 uint8_t global_volume_percent = 0;
-unsigned long currentMillis = 0;
-unsigned long previousMillis = 0;
+unsigned long current_ms = 0;
+unsigned long previous_ms = 0;
 
 EspMQTTClient mqtt_client(
-  "IoT_Dobbi",
-  "canned-ways-incense",
-  "192.168.88.111",
-  "",
-  "",
-  "ESP8266_Dionis",
-  1883
+  "IoT_Dobbi",            //WiFi name
+  "canned-ways-incense",  //WiFi password
+  "192.168.88.111",       //MQTT server address
+  "", "",                 //MQTT username and password
+  "ESP8266_Dionis",       //Client name
+  1883                    //MQTT port
 );
 
-void setup()
-{
-  Serial.begin(115200);
-  mqtt_client.enableDebuggingMessages();
+//---------------------------------------------//
 
-  Wire.begin();
-  for (byte i = 8; i < 120; i++)
-  {
-    Wire.beginTransmission(i);
-    if (Wire.endTransmission() == 0)
-      {
-      Serial.print("Found I2C Device: ");
-      Serial.print(" (0x");
-      Serial.print(i, HEX);
-      Serial.println(")");
-      delay(1);
-      }
-  }
-  Serial.print("\r\n");
+int16_t log_interpolate(int16_t in) {
+    int16_t out = 0;
+    if (in == 0) out = 0;
+    else if (in > 0) out = 0.7*in;
+    else if (in >= 81) out = 2.3*in-130;
+    else if (in >= 100) out = 100;
+    //printf("%d\t%d\n", in, out);
+    return out;
 }
+
+inline int16_t map(int16_t x, int16_t in_min, int16_t in_max, int16_t out_min, int16_t out_max) {
+  return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
+}
+
+inline int16_t convert_percents_to_decibels(int16_t percents) {
+  return map(percents, 0, 100, MIN_DB_VALUE, MAX_DB_VALUE);
+}
+
+inline float exp10f( float x ) { return powf( 10.f, x ); }
+inline int32_t float_to_dsp(float x) { return (int32_t)( x * 0x1p24f ); }
+inline int32_t dB_to_dsp(float x) { return float_to_dsp( exp10f( x / 20.f ) ); }
+
 
 void write_value(uint16_t address, uint32_t value)
 {
@@ -59,55 +65,18 @@ void write_value(uint16_t address, uint32_t value)
   Wire.endTransmission();
 }
 
-int16_t log_interpolate(int16_t in) {
-    int16_t out = 0;
-    if (in == 0) out = 0;
-    if (in > 0) out = 0.7*in;
-    if (in >= 81) out = 2.3*in-130;
-    if (in >= 100) out = 100;
-    //printf("%d\t%d\n", in, out);
-    return out;
-}
-
-int16_t map(int16_t x, int16_t in_min, int16_t in_max, int16_t out_min, int16_t out_max) {
-    return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
-}
-
-int16_t convert_percents_to_decibels(int16_t percents) {
-  return map(percents, 0, 100, -50, 0);
-}
-
-float exp10f( float x ) {
-    return powf( 10.f, x );
-}
-
-int32_t float_to_dsp(float x) {
-    return (int32_t)( x * 0x1p24f );
-}
-
-int32_t dB_to_dsp(float x) {
-    return float_to_dsp( exp10f( x / 20.f ) );
-}
-
-
 void set_volume(uint8_t volume_percent)
 {
-
   int16_t volume_percent_log = log_interpolate((int16_t)volume_percent);
   int16_t db_volume = convert_percents_to_decibels(volume_percent_log);
   int32_t t824_volume = dB_to_dsp((float)db_volume);
   printf("Setting volume: %d -> %d lg -> %d db,\n", volume_percent, volume_percent_log, db_volume);
 
-  //printf("Value %.2f, fixpoint %ld, hex %02X %02X %02X %02X\n", db_volume, t824_volume, bytes[0], bytes[1], bytes[2], bytes[3]);
-  //printf("Send to 0x32 volume command %d, hex converted 0x%08x...\n", volume_percent, volume);
-
-  Serial.println("Start sending to 0x32");
+  Serial.println("Start I2C write to DSP..");
   write_value(DSP_VOLUME_ADDRESS, t824_volume);
   write_value(DSP_START_ADDRESS, DSP_VOLUME_ADDRESS);
-  write_value(DSP_NUM_ADDRESS, 1);
-  //Serial.println("End sending to 0x32");
+  write_value(DSP_NUM_TRIGGER_ADDRESS, 1);
 }
-
 
 void volume_message_received(const String& topic, const String& message) {
   global_volume_percent = strtol(message.c_str(), NULL, 10);
@@ -119,8 +88,7 @@ void volume_message_received(const String& topic, const String& message) {
     set_volume(global_volume_percent);
     mqtt_mutex = 0;
   }
-  else
-  {
+  else{
     Serial.println("MQTT mutex is locked");
   }
 
@@ -129,19 +97,44 @@ void volume_message_received(const String& topic, const String& message) {
 void onConnectionEstablished()
 {
   mqtt_client.subscribe("Dionis/volume/set", volume_message_received);
-  mqtt_client.publish("Dionis/status", "Wifi module started");
+  mqtt_client.publish("Dionis/status", "MQTTtoI2C module started");
   mqtt_client.publish("Dionis/volume", String(global_volume_percent));
 }
+
+void i2c_scanner()
+{
+  Wire.begin();
+  for (byte i = 8; i < 120; i++) {
+    Wire.beginTransmission(i);
+    if (Wire.endTransmission() == 0) {
+        Serial.print("Found I2C Device: ");
+        Serial.print(" (0x");
+        Serial.print(i, HEX);
+        Serial.println(")");
+        delay(1);
+      }
+  }
+  Serial.print("\r\n");
+}
+
+//---------------------------------------------//
+
+void setup()
+{
+  Serial.begin(115200);
+  mqtt_client.enableDebuggingMessages();
+  i2c_scanner();
+}
+
 
 void loop()
 {
   mqtt_client.loop();
-  currentMillis = millis();
+  current_ms = millis();
 
-  if (currentMillis - previousMillis >= PERIDIC_MESSAGE_INTERNAL) {
-    previousMillis = currentMillis;
+  if (current_ms - previous_ms >= PERIODIC_MESSAGE_INTERNAL) {
+    previous_ms = current_ms;
     Serial.println("Publishing to MQTT periodic message");
     mqtt_client.publish("Dionis/volume", String(global_volume_percent));
   }
-
 }
