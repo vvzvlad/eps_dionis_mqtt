@@ -52,7 +52,7 @@ inline int32_t float_to_dsp(float x) { return (int32_t)( x * 0x1p24f ); }
 inline int32_t dB_to_dsp(float x) { return float_to_dsp( exp10f( x / 20.f ) ); }
 
 
-void write_value(uint16_t address, uint32_t value)
+void dsp_write_value(uint16_t address, uint32_t value)
 {
   uint8_t address_u8[] = { (address >> 8) & 0xFF, (address >> 0) & 0xFF };
   uint8_t data_u8[] = { (value >> 24) & 0xFF, (value >> 16) & 0xFF, (value >> 8) & 0xFF, (value >> 0) & 0xFF};
@@ -72,32 +72,25 @@ void set_volume(uint8_t volume_percent)
   int16_t volume_percent_log = log_interpolate((int16_t)volume_percent);
   int16_t db_volume = convert_percents_to_decibels(volume_percent_log);
   int32_t t824_volume = dB_to_dsp((float)db_volume);
-  printf("Setting volume: %d -> %d lg -> %d db,\n", volume_percent, volume_percent_log, db_volume);
+  //printf("Setting volume: %d -> %d lg -> %d db,\n", volume_percent, volume_percent_log, db_volume);
 
   Serial.println("Start I2C write to DSP..");
-  write_value(DSP_VOLUME_ADDRESS, t824_volume);
-  write_value(DSP_START_ADDRESS, DSP_VOLUME_ADDRESS);
-  write_value(DSP_NUM_TRIGGER_ADDRESS, 1);
+  dsp_write_value(DSP_VOLUME_ADDRESS, t824_volume);
+  dsp_write_value(DSP_START_ADDRESS, DSP_VOLUME_ADDRESS);
+  dsp_write_value(DSP_NUM_TRIGGER_ADDRESS, 1);
 }
 
-void set_volume_channels(float a, float b, float c, float d, float ab, float cd)
+void set_volume_channels(float a_ch_db, float b_ch_db, float c_ch_db, float d_ch_db, float ab_ch_db, float cd_ch_db)
 {
-  int32_t t824_volume_a = dB_to_dsp(a);
-  int32_t t824_volume_b = dB_to_dsp(b);
-  int32_t t824_volume_c = dB_to_dsp(c);
-  int32_t t824_volume_d = dB_to_dsp(d);
-  int32_t t824_volume_ab = dB_to_dsp(ab);
-  int32_t t824_volume_cd = dB_to_dsp(cd);
-
-  Serial.println("Start sending to 0x32");
-  write_value(DSP_VOLUME_CHANNELS_ADDRESS+0, t824_volume_a);
-  write_value(DSP_VOLUME_CHANNELS_ADDRESS+1, t824_volume_b);
-  write_value(DSP_VOLUME_CHANNELS_ADDRESS+2, t824_volume_c);
-  write_value(DSP_VOLUME_CHANNELS_ADDRESS+3, t824_volume_d);
-  write_value(DSP_VOLUME_CHANNELS_ADDRESS+4, t824_volume_ab);
-  write_value(DSP_VOLUME_CHANNELS_ADDRESS+5, t824_volume_cd);
-  write_value(DSP_START_ADDRESS, DSP_VOLUME_CHANNELS_ADDRESS);
-  write_value(DSP_NUM_TRIGGER_ADDRESS, 6);
+  Serial.println("Start I2C write to DSP..");
+  dsp_write_value(DSP_VOLUME_CHANNELS_ADDRESS+0, dB_to_dsp(a_ch_db));
+  dsp_write_value(DSP_VOLUME_CHANNELS_ADDRESS+1, dB_to_dsp(b_ch_db));
+  dsp_write_value(DSP_VOLUME_CHANNELS_ADDRESS+2, dB_to_dsp(c_ch_db));
+  dsp_write_value(DSP_VOLUME_CHANNELS_ADDRESS+3, dB_to_dsp(d_ch_db));
+  dsp_write_value(DSP_VOLUME_CHANNELS_ADDRESS+4, dB_to_dsp(ab_ch_db));
+  dsp_write_value(DSP_VOLUME_CHANNELS_ADDRESS+5, dB_to_dsp(cd_ch_db));
+  dsp_write_value(DSP_START_ADDRESS, DSP_VOLUME_CHANNELS_ADDRESS);
+  dsp_write_value(DSP_NUM_TRIGGER_ADDRESS, 6);
   //Serial.println("End sending to 0x32");
 }
 
@@ -120,17 +113,15 @@ void volume_channels_message_received(const String& topic, const String& message
   DynamicJsonDocument volume_channels(1024);
   DeserializationError error = deserializeJson(volume_channels, message); //{"A":"-12.50","B":"-7.5","C":"-3.75","D":"-15","AB":"-3.75","CD":"-16.25"}
 
-  float a_volume = volume_channels["A"];
-  float b_volume = volume_channels["B"];
-  float c_volume = volume_channels["C"];
-  float d_volume = volume_channels["D"];
-  float ab_volume = volume_channels["AB"];
-  float cd_volume = volume_channels["CD"];
-
-  printf("Recieved payload from MQTT %s\n Parsed volumes: %f,%f,%f,%f,%f,%f\n", message.c_str(), a_volume, b_volume, c_volume, d_volume, ab_volume, cd_volume);
+  //printf("Recieved payload from MQTT %s\n Parsed volumes: %f,%f,%f,%f,%f,%f\n", message.c_str(), a_volume, b_volume, c_volume, d_volume, ab_volume, cd_volume);
   if (mqtt_mutex == 0) {
     mqtt_mutex = 1;
-    set_volume_channels(a_volume, b_volume, c_volume, d_volume, ab_volume, cd_volume);
+    set_volume_channels(volume_channels["A"].as<float>(),
+                          volume_channels["B"].as<float>(),
+                          volume_channels["C"].as<float>(),
+                          volume_channels["D"].as<float>(),
+                          volume_channels["AB"].as<float>(),
+                          volume_channels["CD"].as<float>() );
     mqtt_mutex = 0;
   }
   else
