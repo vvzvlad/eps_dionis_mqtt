@@ -9,7 +9,7 @@
 #define DSP_START_ADDRESS             24583 /*!< start address in memory (indirect memory table) */
 #define DSP_NUM_TRIGGER_ADDRESS       24584 /*!< num address in memory (indirect memory table) */
 
-#define PERIODIC_MESSAGE_INTERNAL     30*1000 /*!< periodicity of internal messages in milliseconds */
+#define PERIODIC_MESSAGE_INTERNAL     30*1000 /*!< periodicity of messages in milliseconds */
 #define MAX_DB_VALUE                  0 /*!< maximum value of dB */
 #define MIN_DB_VALUE                  -50 /*!< minimum value of dB */
 
