@@ -9,14 +9,25 @@
 #define DSP_START_ADDRESS             24583 /*!< start address in memory (indirect memory table) */
 #define DSP_NUM_TRIGGER_ADDRESS       24584 /*!< num address in memory (indirect memory table) */
 
-#define PERIODIC_MESSAGE_INTERNAL     30*1000 /*!< periodicity of messages in milliseconds */
+#define DSP_VOLUME_CHANNELS_START_ADDRESS       24595 /*!< num address in memory (indirect memory table) */
+#define DSP_VOLUME_CHANNELS_NUM       24 /*!< num address in memory (indirect memory table) */
+
+#define PERIODIC_MESSAGE_INTERVAL     30*1000 /*!< periodicity of messages in milliseconds */
 #define MAX_DB_VALUE                  0 /*!< maximum value of dB */
-#define MIN_DB_VALUE                  -50 /*!< minimum value of dB */
+#define MIN_DB_VALUE                  -70 /*!< minimum value of dB */
 
 uint8_t mqtt_mutex = 0;
+uint16_t global_rta_levels_period = 0;
+
 uint8_t global_volume_percent = 0;
 unsigned long current_ms = 0;
-unsigned long previous_ms = 0;
+unsigned long previous_ms_mqtt = 0;
+unsigned long previous_ms_read = 0;
+
+String udp_address = "192.168.88.100";
+uint16_t udp_port = 4210;
+
+WiFiUDP udp_sender;
 
 EspMQTTClient mqtt_client(
   "IoT_Dobbi",            //WiFi name
@@ -51,6 +62,23 @@ inline float exp10f( float x ) { return powf( 10.f, x ); }
 inline int32_t float_to_dsp(float x) { return (int32_t)( x * 0x1p24f ); }
 inline int32_t dB_to_dsp(float x) { return float_to_dsp( exp10f( x / 20.f ) ); }
 
+
+void PrintHex8(uint8_t *data, uint8_t length) // prints 8-bit data in hex
+{
+      char tmp[length*2+1];
+      byte first;
+      byte second;
+      for (int i=0; i<length; i++) {
+            first = (data[i] >> 4) & 0x0f;
+            second = data[i] & 0x0f;
+            tmp[i*2] = first+48;
+            tmp[i*2+1] = second+48;
+            if (first > 9) tmp[i*2] += 39;
+            if (second > 9) tmp[i*2+1] += 39;
+      }
+      tmp[length*2] = 0;
+      Serial.print(tmp);
+}
 
 void dsp_write_value(uint16_t address, uint32_t value)
 {
@@ -130,13 +158,25 @@ void volume_channels_message_received(const String& topic, const String& message
   }
 }
 
+void rta_send_message_received(const String& topic, const String& message) {
+  DynamicJsonDocument rta_settings(1024);
+  DeserializationError error = deserializeJson(rta_settings, message);
+
+  udp_address = rta_settings["ip"].as<String>();
+  udp_port = rta_settings["port"].as<int>();
+  global_rta_levels_period = rta_settings["period"].as<int>();
+
+  //printf("Recieved payload from MQTT %s\n Parsed RTA settings: %s, %d, period: %d\n", message.c_str(), udp_address.c_str(), udp_port, global_rta_levels_period);
+}
+
 void onConnectionEstablished()
 {
-  mqtt_client.subscribe("Dionis/volume/set", volume_message_received);
-  mqtt_client.subscribe("Dionis/volume_channels/set", volume_channels_message_received);
+  mqtt_client.subscribe("dionis/volume/set", volume_message_received);
+  mqtt_client.subscribe("dionis/volume_channels/set", volume_channels_message_received);
+  mqtt_client.subscribe("dionis/rta_send_settings/set", rta_send_message_received);
 
-  mqtt_client.publish("Dionis/status", "MQTTtoI2C module started");
-  mqtt_client.publish("Dionis/volume", String(global_volume_percent));
+  mqtt_client.publish("dionis/status", "MQTTtoI2C module started");
+  mqtt_client.publish("dionis/volume", String(global_volume_percent));
 }
 
 void i2c_scanner()
@@ -155,6 +195,32 @@ void i2c_scanner()
   Serial.print("\r\n");
 }
 
+void read_and_send_rta_levels()
+{
+  char * udp_address_c = (char *)udp_address.c_str();
+
+  uint8_t rta_levels_u8[DSP_VOLUME_CHANNELS_NUM*2];
+  memset(rta_levels_u8, 0xFA, DSP_VOLUME_CHANNELS_NUM*2);
+
+  //Serial.print("I2C Read: ");
+  for (int i = 0; i < DSP_VOLUME_CHANNELS_NUM; i++) {
+    uint8_t address_u8[] = { (DSP_VOLUME_CHANNELS_START_ADDRESS+i >> 8) & 0xFF, (DSP_VOLUME_CHANNELS_START_ADDRESS+i >> 0) & 0xFF };
+    Wire.beginTransmission(DSP_ADDRESS);
+    Wire.write(address_u8[0]);
+    Wire.write(address_u8[1]);
+    Wire.endTransmission(true);
+    Wire.requestFrom(DSP_ADDRESS, 2);
+    if (Wire.available() == 1); {
+      rta_levels_u8[i*2+0] = Wire.read();
+      rta_levels_u8[i*2+1] = Wire.read();
+    }
+  }
+  Serial.print(".");
+  udp_sender.beginPacket(udp_address_c, udp_port);
+  udp_sender.write(rta_levels_u8, DSP_VOLUME_CHANNELS_NUM*2);
+  udp_sender.endPacket();
+}
+
 //---------------------------------------------//
 
 void setup()
@@ -170,9 +236,16 @@ void loop()
   mqtt_client.loop();
   current_ms = millis();
 
-  if (current_ms - previous_ms >= PERIODIC_MESSAGE_INTERNAL) {
-    previous_ms = current_ms;
+  if (current_ms - previous_ms_mqtt >= PERIODIC_MESSAGE_INTERVAL) {
+    previous_ms_mqtt = current_ms;
     Serial.println("Publishing to MQTT periodic message");
-    mqtt_client.publish("Dionis/volume", String(global_volume_percent));
+    mqtt_client.publish("dionis/volume", String(global_volume_percent)); //MIN_DB_VALUE, etc
+  }
+
+  if (global_rta_levels_period > 0) {
+    if (current_ms - previous_ms_read >= global_rta_levels_period) {
+      previous_ms_read = current_ms;
+      read_and_send_rta_levels();
+    }
   }
 }
